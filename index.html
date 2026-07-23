@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>COVID-19 Narrative Visualization</title>
+    
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/d3-annotation/2.5.1/d3-annotation.min.js"></script>
+
+    <style>
+        body {
+            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+            background-color: #f9f9f9;
+            color: #333;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        #container {
+            width: 900px;
+            background: white;
+            padding: 20px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            border-radius: 8px;
+        }
+        .header-controls {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+        }
+        button {
+            padding: 10px 15px;
+            font-size: 14px;
+            cursor: pointer;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+        }
+        button:disabled { background-color: #ccc; cursor: not-allowed; }
+        
+        #scene-controls { display: none; margin-bottom: 15px; }
+        select { padding: 5px; font-size: 14px; }
+        
+        .line-cases { fill: none; stroke: #007bff; stroke-width: 2.5px; }
+        .line-deaths { fill: none; stroke: #dc3545; stroke-width: 2.5px; }
+        .bar-cases { fill: #007bff; }
+        
+        #tooltip {
+            position: absolute;
+            opacity: 0;
+            background: rgba(255, 255, 255, 0.95);
+            border: 1px solid #ccc;
+            padding: 10px;
+            border-radius: 4px;
+            pointer-events: none;
+            font-size: 12px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .annotation-note-title { font-weight: bold; fill: #333; }
+        .annotation-note-label { fill: #666; font-size: 12px; }
+        .annotation path { stroke: #666; }
+    </style>
+</head>
+<body>
+
+<div id="container">
+    <div class="header-controls">
+        <button id="btn-prev">Previous</button>
+        <h2 id="scene-title">Scene Title</h2>
+        <button id="btn-next">Next</button>
+    </div>
+    
+    <div id="scene-text" style="margin-bottom: 15px; font-size: 15px; color: #555;"></div>
+
+    <div id="scene-controls">
+        <label for="state-select"><strong>Select a State to Explore: </strong></label>
+        <select id="state-select"></select>
+    </div>
+
+    <svg id="chart" width="860" height="500"></svg>
+</div>
+
+<div id="tooltip"></div>
+
+<script>
+    let currentScene = 1;
+    let selectedState = "New York";
+    
+    let usData = [];
+    let stateData = [];
+    let stateNames = [];
+
+    const svg = d3.select("#chart");
+    const margin = {top: 40, right: 120, bottom: 60, left: 80};
+    const width = +svg.attr("width") - margin.left - margin.right;
+    const height = +svg.attr("height") - margin.top - margin.bottom;
+
+    const chartArea = svg.append("g")
+                         .attr("transform", `translate(${margin.left},${margin.top})`);
+    //load covid-19 data
+    Promise.all([
+        d3.csv("https://raw.githubusercontent.com/nytimes/covid-19-data/master/us.csv", d => ({
+            date: d3.timeParse("%Y-%m-%d")(d.date),
+            cases: +d.cases,
+            deaths: +d.deaths
+        })),
+        d3.csv("https://raw.githubusercontent.com/nytimes/covid-19-data/master/us-states.csv", d => ({
+            date: d3.timeParse("%Y-%m-%d")(d.date),
+            state: d.state,
+            cases: +d.cases,
+            deaths: +d.deaths
+        }))
+    ]).then(function(datasets) {
+        usData = datasets[0];
+        stateData = datasets[1];
+        
+        stateNames = Array.from(new Set(stateData.map(d => d.state))).sort();
+        const select = d3.select("#state-select");
+        stateNames.forEach(state => {
+            select.append("option").text(state).attr("value", state);
+        });
+        select.property("value", selectedState);
+
+        updateScene();
+    });
+
+    d3.select("#btn-next").on("click", () => {
+        if (currentScene < 3) { currentScene++; updateScene(); }
+    });
+
+    d3.select("#btn-prev").on("click", () => {
+        if (currentScene > 1) { currentScene--; updateScene(); }
+    });
+
+    d3.select("#state-select").on("change", function() {
+        selectedState = this.value;
+        drawScene3();
+    });
+
+    function updateScene() {
+        // Update Buttons
+        d3.select("#btn-prev").property("disabled", currentScene === 1);
+        d3.select("#btn-next").property("disabled", currentScene === 3);
+        
+        d3.select("#scene-controls").style("display", currentScene === 3 ? "block" : "none");
+
+        chartArea.selectAll("*").remove();
+        svg.select(".annotations").remove();
+
+        if (currentScene === 1) drawScene1();
+        else if (currentScene === 2) drawScene2();
+        else if (currentScene === 3) drawScene3Setup();
+    }
+
+    // scene 1
+    function drawScene1() {
+        d3.select("#scene-title").text("1. The National Surge");
+        d3.select("#scene-text").html("From early 2020 through 2023, COVID-19 cases (<b><span style='color:#007bff'>Blue</span></b>) and deaths (<b><span style='color:#dc3545'>Red</span></b>) rose at an unprecedented rate across the United States. Notice the sharp exponential curves during winter surges.");
+
+        const x = d3.scaleTime().domain(d3.extent(usData, d => d.date)).range([0, width]);
+        const y = d3.scaleLinear().domain([0, d3.max(usData, d => d.cases)]).range([height, 0]);
+
+        chartArea.append("g").attr("transform", `translate(0,${height})`).call(d3.axisBottom(x));
+        chartArea.append("g").call(d3.axisLeft(y).tickFormat(d3.format(".2s")));
+
+        const lineCases = d3.line().x(d => x(d.date)).y(d => y(d.cases));
+        chartArea.append("path").datum(usData).attr("class", "line-cases").attr("d", lineCases);
+
+        const lineDeaths = d3.line().x(d => x(d.date)).y(d => y(d.deaths));
+        chartArea.append("path").datum(usData).attr("class", "line-deaths").attr("d", lineDeaths);
+
+        const milestoneTarget = usData.find(d => d.deaths >= 1000000);
+        
+        if (milestoneTarget) {
+            const annotations = [{
+                note: { title: "1 Million Deaths", label: "The US crosses a grim milestone in May 2022.", wrap: 150 },
+                x: x(milestoneTarget.date) + margin.left,
+                y: y(milestoneTarget.deaths) + margin.top,
+                dy: -100,
+                dx: -50
+            }];
+            const makeAnnotations = d3.annotation().type(d3.annotationLabel).annotations(annotations);
+            svg.append("g").attr("class", "annotation-group").call(makeAnnotations);
+        }
+    }
+
+    // scene 2
+    function drawScene2() {
+        d3.select("#scene-title").text("2. State Disparities");
+        d3.select("#scene-text").text("The national numbers were heavily driven by specific states. This chart shows the top 10 states by total cumulative cases at the end of the NYT dataset.");
+
+        const latestData = Array.from(d3.group(stateData, d => d.state), ([state, data]) => {
+            return data[data.length - 1]; // Last entry is cumulative total
+        }).sort((a, b) => b.cases - a.cases).slice(0, 10);
+
+        const x = d3.scaleBand().domain(latestData.map(d => d.state)).range([0, width]).padding(0.2);
+        const y = d3.scaleLinear().domain([0, d3.max(latestData, d => d.cases)]).range([height, 0]);
+
+        chartArea.append("g").attr("transform", `translate(0,${height})`)
+                 .call(d3.axisBottom(x))
+                 .selectAll("text").attr("transform", "rotate(-45)").style("text-anchor", "end");
+        
+        chartArea.append("g").call(d3.axisLeft(y).tickFormat(d3.format(".2s")));
+
+        chartArea.selectAll(".bar")
+            .data(latestData).enter().append("rect")
+            .attr("class", "bar-cases")
+            .attr("x", d => x(d.state))
+            .attr("y", d => y(d.cases))
+            .attr("width", x.bandwidth())
+            .attr("height", d => height - y(d.cases));
+
+        const caData = latestData.find(d => d.state === "California");
+        const annotations = [{
+            note: { title: "Population Impacts", label: "California and Texas lead in total numbers primarily due to sheer population size.", wrap: 200 },
+            x: x(caData.state) + (x.bandwidth()/2) + margin.left,
+            y: y(caData.cases) + margin.top,
+            dy: 30,
+            dx: 120
+        }];
+        const makeAnnotations = d3.annotation().type(d3.annotationCalloutElbow).annotations(annotations);
+        svg.append("g").attr("class", "annotation-group").call(makeAnnotations);
+    }
+
+    // scene 3
+    function drawScene3Setup() {
+        d3.select("#scene-title").text("3. Explore Your State");
+        d3.select("#scene-text").html("Now you have control. Select a state from the dropdown above to view its specific pandemic curve. <strong>Hover over the chart</strong> to see exact daily numbers.");
+
+        chartArea.append("g").attr("class", "x-axis").attr("transform", `translate(0,${height})`);
+        chartArea.append("g").attr("class", "y-axis");
+        chartArea.append("path").attr("class", "line-cases");
+        chartArea.append("path").attr("class", "line-deaths");
+
+        chartArea.append("rect")
+            .attr("class", "overlay")
+            .attr("width", width)
+            .attr("height", height)
+            .style("fill", "none")
+            .style("pointer-events", "all");
+
+        drawScene3();
+    }
+
+    function drawScene3() {
+        const filteredData = stateData.filter(d => d.state === selectedState);
+
+        const x = d3.scaleTime().domain(d3.extent(filteredData, d => d.date)).range([0, width]);
+        const y = d3.scaleLinear().domain([0, d3.max(filteredData, d => d.cases)]).range([height, 0]);
+
+        const t = chartArea.transition().duration(750);
+
+        chartArea.select(".x-axis").transition(t).call(d3.axisBottom(x));
+        chartArea.select(".y-axis").transition(t).call(d3.axisLeft(y).tickFormat(d3.format(".2s")));
+
+        const lineCases = d3.line().x(d => x(d.date)).y(d => y(d.cases));
+        chartArea.select(".line-cases").datum(filteredData).transition(t).attr("d", lineCases);
+
+        const lineDeaths = d3.line().x(d => x(d.date)).y(d => y(d.deaths));
+        chartArea.select(".line-deaths").datum(filteredData).transition(t).attr("d", lineDeaths);
+
+        const bisect = d3.bisector(d => d.date).left;
+        const tooltip = d3.select("#tooltip");
+
+        chartArea.select(".overlay")
+            .on("mouseover", () => tooltip.style("opacity", 1))
+            .on("mouseout", () => tooltip.style("opacity", 0))
+            .on("mousemove", (event) => {
+                const x0 = x.invert(d3.pointer(event)[0]);
+                const i = bisect(filteredData, x0, 1);
+                const d0 = filteredData[i - 1];
+                const d1 = filteredData[i];
+                if(!d0 || !d1) return;
+                const d = x0 - d0.date > d1.date - x0 ? d1 : d0;
+                
+                tooltip
+                    .html(`<strong>${d3.timeFormat("%B %d, %Y")(d.date)}</strong><br/>Cases: ${d.cases.toLocaleString()}<br/>Deaths: ${d.deaths.toLocaleString()}`)
+                    .style("left", (event.pageX + 15) + "px")
+                    .style("top", (event.pageY - 28) + "px");
+            });
+    }
+</script>
+</body>
+</html>
